@@ -12,8 +12,10 @@
 //   * When the 'atlas' feature is enabled tilesets using a collection of images will be skipped.
 //   * Only finite tile layers are loaded. Infinite tile layers and object layers will be skipped.
 
-use std::io::Cursor;
-use std::path::Path;
+use std::env;
+use std::fs::File;
+use std::io::{Cursor, Error, ErrorKind};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use bevy::{
@@ -69,23 +71,36 @@ pub struct TiledMapBundle {
 
 struct BytesResourceReader {
     bytes: Arc<[u8]>,
+    assets_path: PathBuf,
 }
 
 impl BytesResourceReader {
-    fn new(bytes: &[u8]) -> Self {
+    fn new(bytes: &[u8], assets_path: PathBuf) -> Self {
         Self {
             bytes: Arc::from(bytes),
+            assets_path,
         }
     }
 }
 
 impl tiled::ResourceReader for BytesResourceReader {
-    type Resource = Cursor<Arc<[u8]>>;
+    type Resource = Box<dyn std::io::Read + Send + Sync>;
     type Error = std::io::Error;
 
-    fn read_from(&mut self, _path: &Path) -> std::result::Result<Self::Resource, Self::Error> {
-        // In this case, the path is ignored because the byte data is already provided.
-        Ok(Cursor::new(self.bytes.clone()))
+    fn read_from(&mut self, path: &Path) -> std::result::Result<Self::Resource, Self::Error> {
+        // Check if the path has a .tsx extension
+        if let Some(extension) = path.extension() {
+            if extension == "tsx" {
+                // If the file is a .tsx file, attempt to load it from the filesystem
+                let full_path = self.assets_path.join(path);
+                let file =
+                    File::open(&full_path).map_err(|err| Error::new(ErrorKind::NotFound, err))?;
+                return Ok(Box::new(file));
+            }
+        }
+
+        // If the path is not a .tsx file, load the byte data
+        Ok(Box::new(Cursor::new(self.bytes.clone())))
     }
 }
 
@@ -107,7 +122,7 @@ impl AssetLoader for TiledLoader {
 
             let mut loader = tiled::Loader::with_cache_and_reader(
                 tiled::DefaultResourceCache::new(),
-                BytesResourceReader::new(bytes),
+                BytesResourceReader::new(bytes, env::current_dir().unwrap().join("assets")),
             );
             let map = loader
                 .load_tmx_map(load_context.path())
